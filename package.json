@@ -1,10 +1,7 @@
 {
   "name": "bark-to-mattermost",
   "version": "1.0.0",
-  "description": "Bark to Mattermost webhook",
+  "description": "Bark to Mattermost",
   "type": "module",
-  "main": "functions/index.js",
-  "scripts": {
-    "deploy": "edgeone pages deploy"
-  }
+  "main": "functions/[[path]].js"
 }
