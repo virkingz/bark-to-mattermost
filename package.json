@@ -1,7 +1,7 @@
 {
   "name": "bark-to-mattermost",
   "version": "1.0.0",
-  "description": "Bark to Mattermost",
+  "description": "Bark to Mattermost webhook",
   "type": "module",
-  "main": "functions/[[path]].js"
+  "main": "cloud-functions/[[path]].js"
 }
