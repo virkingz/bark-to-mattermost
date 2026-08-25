@@ -1,6 +1,6 @@
-// index.js - EdgeOne Pages Functions 兼容格式
+// functions/index.js - EdgeOne Pages 专用
 
-// 从环境变量获取配置
+// 从环境变量获取配置（在 Pages 控制台设置）
 const MATTERMOST_WEBHOOK_BASE_URL = process.env.MATTERMOST_WEBHOOK_BASE_URL || '';
 
 // 优先级映射
@@ -10,255 +10,172 @@ const LEVEL_MAP = {
   "passive": "🔵 低优先级"
 };
 
-// 排除的路径
-const EXCLUDED_PATHS = ["/", "/push", "/webhook", "/favicon.ico"];
-
 function buildMattermostPayload(barkData) {
-  const title = barkData.title || "";
-  const body = barkData.body || "";
   const lines = [];
-
   const level = barkData.level || "";
   if (level && LEVEL_MAP[level]) {
     lines.push(LEVEL_MAP[level]);
   }
+  if (barkData.title) lines.push(`**${barkData.title}**`);
+  if (barkData.body) lines.push(barkData.body);
+  if (barkData.badge) lines.push(`徽章: ${barkData.badge}`);
+  if (barkData.copy) lines.push(`📋 复制: \`${barkData.copy}\``);
+  if (barkData.sound) lines.push(`🔊 音效: ${barkData.sound}`);
+  if (barkData.group) lines.push(`🏷️ 分组: ${barkData.group}`);
 
-  if (title) {
-    lines.push(`**${title}**`);
-  }
-
-  if (body) {
-    lines.push(body);
-  }
-
-  const badge = barkData.badge || "";
-  if (badge) {
-    lines.push(`徽章: ${badge}`);
-  }
-
-  const copyText = barkData.copy || "";
-  if (copyText) {
-    lines.push(`📋 复制内容: \`${copyText}\``);
-  }
-
-  const sound = barkData.sound || "";
-  if (sound) {
-    lines.push(`🔊 音效: ${sound}`);
-  }
-
-  const group = barkData.group || "";
-  if (group) {
-    lines.push(`🏷️ 分组: ${group}`);
-  }
-
-  if (lines.length === 0) {
-    return null;
-  }
-
-  let textContent = lines.join("\n");
-  textContent = textContent.replace(/https?:\/\/\S+/g, '');
-  textContent = textContent.replace(/\n\s*\n+/g, '\n').trim();
-
-  if (barkData.markdown) {
-    textContent = barkData.markdown;
-  }
-
-  return { text: textContent };
+  if (lines.length === 0) return null;
+  
+  let text = lines.join("\n").replace(/https?:\/\/\S+/g, '').trim();
+  if (barkData.markdown) text = barkData.markdown;
+  
+  return { text };
 }
 
 function parseBarkRequest(url, method, bodyData = null) {
   const urlObj = new URL(url);
   const path = urlObj.pathname;
-  const queryParams = Object.fromEntries(urlObj.searchParams);
-
-  const parts = path.replace(/^\//, '').split('/').filter(p => p.length > 0);
+  const query = Object.fromEntries(urlObj.searchParams);
   
-  if (parts.length === 0) {
-    return null;
-  }
+  const parts = path.replace(/^\//, '').split('/').filter(p => p);
+  if (parts.length === 0) return null;
 
   const deviceKey = parts[0];
+  const barkData = { title: "", body: "", device_key: deviceKey };
 
-  const barkData = {
-    title: "",
-    body: "",
-    device_key: deviceKey
-  };
+  if (query.title) barkData.title = decodeURIComponent(query.title);
+  if (query.body) barkData.body = decodeURIComponent(query.body);
+  
+  ['url', 'group', 'icon', 'copy'].forEach(p => {
+    if (query[p]) barkData[p] = decodeURIComponent(query[p]);
+  });
+  
+  ['level', 'badge', 'sound'].forEach(p => {
+    if (query[p]) barkData[p] = query[p];
+  });
 
-  if (queryParams.title) {
-    barkData.title = decodeURIComponent(queryParams.title);
-  }
-  if (queryParams.body) {
-    barkData.body = decodeURIComponent(queryParams.body);
-  }
-
-  const stringParams = ['url', 'group', 'icon', 'copy'];
-  for (const param of stringParams) {
-    if (queryParams[param]) {
-      barkData[param] = decodeURIComponent(queryParams[param]);
-    }
-  }
-
-  const simpleParams = ['level', 'badge', 'sound'];
-  for (const param of simpleParams) {
-    if (queryParams[param]) {
-      barkData[param] = queryParams[param];
-    }
-  }
-
-  if (queryParams.autoCopy) {
-    barkData.auto_copy = queryParams.autoCopy;
-  }
-  if (queryParams.isArchive) {
-    barkData.isArchive = queryParams.isArchive;
-  }
+  if (query.autoCopy) barkData.auto_copy = query.autoCopy;
+  if (query.isArchive) barkData.isArchive = query.isArchive;
 
   if (parts.length > 1) {
-    const pathContent = parts.slice(1).join('/');
-    const decodedPath = decodeURIComponent(pathContent);
-
+    const content = decodeURIComponent(parts.slice(1).join('/'));
     if (!barkData.title && !barkData.body) {
-      if (decodedPath.includes('/')) {
-        const idx = decodedPath.indexOf('/');
-        barkData.title = decodedPath.substring(0, idx);
-        barkData.body = decodedPath.substring(idx + 1);
+      const idx = content.indexOf('/');
+      if (idx > 0) {
+        barkData.title = content.substring(0, idx);
+        barkData.body = content.substring(idx + 1);
       } else {
-        barkData.title = decodedPath;
+        barkData.title = content;
       }
     }
   }
 
   if (bodyData) {
-    for (const [key, value] of Object.entries(bodyData)) {
-      const lowerKey = key.toLowerCase();
-      if (['title', 'body', 'url', 'group', 'icon', 'copy'].includes(lowerKey)) {
-        barkData[lowerKey] = typeof value === 'string' ? decodeURIComponent(value) : String(value);
-      } else if (['level', 'badge', 'sound'].includes(lowerKey)) {
-        barkData[lowerKey] = String(value);
-      } else if (lowerKey === 'autocopy') {
+    Object.entries(bodyData).forEach(([key, value]) => {
+      const k = key.toLowerCase();
+      if (['title', 'body', 'url', 'group', 'icon', 'copy'].includes(k)) {
+        barkData[k] = typeof value === 'string' ? decodeURIComponent(value) : String(value);
+      } else if (['level', 'badge', 'sound'].includes(k)) {
+        barkData[k] = String(value);
+      } else if (k === 'autocopy') {
         barkData.auto_copy = String(value);
       }
-    }
+    });
   }
 
   return barkData;
 }
 
-function createResponse(data, status = 200) {
+function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
-    status: status,
-    headers: {
+    status,
+    headers: { 
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*"
     }
   });
 }
 
-// EdgeOne Pages Functions 入口 - 使用 export 方式
+// ============ EdgeOne Pages 入口 ============
 export async function onRequest(context) {
   const { request } = context;
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
 
-  // 获取环境变量 - EdgeOne Pages 使用 context.env
-  const baseUrl = context.env?.MATTERMOST_WEBHOOK_BASE_URL || process.env?.MATTERMOST_WEBHOOK_BASE_URL || '';
-
   // 健康检查
   if (path === "/" || path === "/health") {
-    return createResponse({
+    return jsonResponse({
       status: "running",
       service: "bark-to-mattermost",
       timestamp: Date.now()
     });
   }
 
-  // 排除路径
-  if (EXCLUDED_PATHS.includes(path)) {
-    return createResponse({
-      code: 404,
-      message: "Not found"
-    }, 404);
-  }
-
+  // 检查环境变量
+  const baseUrl = process.env.MATTERMOST_WEBHOOK_BASE_URL || 
+                  context.env?.MATTERMOST_WEBHOOK_BASE_URL || '';
+  
   if (!baseUrl) {
-    console.error("MATTERMOST_WEBHOOK_BASE_URL environment variable not set");
-    return createResponse({
+    console.error("MATTERMOST_WEBHOOK_BASE_URL not set");
+    return jsonResponse({
       code: 500,
-      message: "Server configuration error: MATTERMOST_WEBHOOK_BASE_URL not set"
+      message: "Configuration error: MATTERMOST_WEBHOOK_BASE_URL not set"
     }, 500);
   }
 
   try {
+    // 获取 body
     let bodyData = null;
     if (method === "POST") {
-      const contentType = request.headers.get("content-type") || "";
-      if (contentType.includes("application/json")) {
-        try {
-          bodyData = await request.json();
-        } catch (e) {
-          bodyData = {};
-        }
+      const ct = request.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        try { bodyData = await request.json(); } catch (e) { bodyData = {}; }
       }
     }
 
+    // 解析请求
     const barkData = parseBarkRequest(request.url, method, bodyData);
-
     if (!barkData) {
-      return createResponse({
-        code: 400,
-        message: "Invalid request"
-      }, 400);
+      return jsonResponse({ code: 400, message: "Invalid request" }, 400);
     }
 
     const deviceKey = barkData.device_key;
-    console.log(`解析Bark数据: device_key=${deviceKey}`);
+    console.log(`device_key: ${deviceKey}`);
 
+    // 构建 payload
     const payload = buildMattermostPayload(barkData);
-
     if (!payload) {
-      console.log(`空通知，不发送 (device_key: ${deviceKey})`);
-      return createResponse({
-        code: 200,
-        message: "success",
-        timestamp: Date.now()
-      });
+      return jsonResponse({ code: 200, message: "empty", timestamp: Date.now() });
     }
 
-    const baseUrlClean = baseUrl.replace(/\/$/, '');
-    const mattermostUrl = `${baseUrlClean}/hooks/${deviceKey}`;
-
-    const response = await fetch(mattermostUrl, {
+    // 发送到 Mattermost
+    const webhookUrl = `${baseUrl.replace(/\/$/, '')}/hooks/${deviceKey}`;
+    const resp = await fetch(webhookUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`HTTP错误: ${response.status} - ${errorText}`);
-      return createResponse({
+    if (!resp.ok) {
+      console.error(`HTTP ${resp.status}`);
+      return jsonResponse({
         code: 500,
-        message: `转发失败: HTTP ${response.status}`,
-        detail: errorText,
+        message: `Forward failed: HTTP ${resp.status}`,
         timestamp: Date.now()
       }, 500);
     }
 
-    console.log(`转发成功: ${response.status}`);
-    return createResponse({
+    return jsonResponse({
       code: 200,
       message: "success",
       timestamp: Date.now()
     });
 
   } catch (error) {
-    console.error(`处理请求失败: ${error.message}`);
-    return createResponse({
+    console.error(error.message);
+    return jsonResponse({
       code: 500,
-      message: `服务器错误: ${error.message}`,
+      message: `Error: ${error.message}`,
       timestamp: Date.now()
     }, 500);
   }
