@@ -1,21 +1,14 @@
-// cloud-functions/[[path]].js - 支持企业微信应用消息 和 Mattermost
+// cloud-functions/[[path]].js - 完全对齐 Python WeCom 类逻辑
 
-// ============ 环境变量配置 ============
-// 企业微信应用配置 (格式: corpid,corpsecret,agentid,touser,media_id)
-// media_id 可选，用于发送图文消息
 const QYWX_AM = process.env.QYWX_AM || '';
-
-// Mattermost 配置
 const MATTERMOST_WEBHOOK_BASE_URL = process.env.MATTERMOST_WEBHOOK_BASE_URL || '';
 
-// ============ 常量映射 ============
 const LEVEL_MAP = {
   "active": "🔴 高优先级",
   "timeSensitive": "🟡 中优先级",
   "passive": "🔵 低优先级"
 };
 
-// ============ 响应工具 ============
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -29,23 +22,15 @@ function jsonResponse(data, status = 200) {
 // ============ 构建消息内容 ============
 function buildMessageContent(barkData) {
   const lines = [];
-  
-  // 优先级
   if (barkData.level && LEVEL_MAP[barkData.level]) {
     lines.push(LEVEL_MAP[barkData.level]);
   }
-  
-  // 标题
   if (barkData.title) {
     lines.push(`**${barkData.title}**`);
   }
-  
-  // 正文
   if (barkData.body) {
     lines.push(barkData.body);
   }
-  
-  // 其他信息
   if (barkData.badge) {
     lines.push(`徽章: ${barkData.badge}`);
   }
@@ -58,50 +43,47 @@ function buildMessageContent(barkData) {
   if (barkData.group) {
     lines.push(`🏷️ 分组: ${barkData.group}`);
   }
-  
-  if (lines.length === 0) {
-    return null;
-  }
-  
-  let text = lines.join("\n");
-  text = text.replace(/https?:\/\/\S+/g, '').trim();
-  
-  return text;
+  if (lines.length === 0) return null;
+  return lines.join("\n").replace(/https?:\/\/\S+/g, '').trim();
 }
 
-// ============ 解析 Bark 请求 ============
+// ============ 解析 Bark 请求（增强版） ============
 function parseBarkRequest(url, method, bodyData = null) {
   const urlObj = new URL(url);
   const path = urlObj.pathname;
   const query = Object.fromEntries(urlObj.searchParams);
-  
-  // 移除路径前缀
+
+  // 1. 从 POST Body 获取（优先级最高）
+  let title = bodyData?.title || bodyData?.push_title || '';
+  let body = bodyData?.body || bodyData?.push_body || '';
+  let level = bodyData?.level || '';
+  let group = bodyData?.group || '';
+  let copy = bodyData?.copy || '';
+  let deviceKey = bodyData?.device_key || bodyData?.deviceKey || 'default';
+
+  // 2. 如果 Body 没有，从 Query String 获取
+  if (!title) title = query.title || '';
+  if (!body) body = query.body || '';
+  if (!level) level = query.level || '';
+  if (!group) group = query.group || '';
+  if (!copy) copy = query.copy || '';
+  if (deviceKey === 'default') deviceKey = query.device_key || query.deviceKey || 'default';
+
+  // 3. 如果都没有，从 URL Path 解析 (Bark 标准格式)
   let cleanPath = path;
-  if (cleanPath.startsWith('/mattermost')) {
-    cleanPath = cleanPath.replace('/mattermost', '');
-  } else if (cleanPath.startsWith('/wx')) {
-    cleanPath = cleanPath.replace('/wx', '');
-  }
-  
+  if (cleanPath.startsWith('/mattermost')) cleanPath = cleanPath.replace('/mattermost', '');
+  else if (cleanPath.startsWith('/wx')) cleanPath = cleanPath.replace('/wx', '');
+
   const parts = cleanPath.replace(/^\//, '').split('/').filter(p => p.length > 0);
-  
-  let deviceKey = "default";
-  let title = query.title || "";
-  let body = query.body || "";
-  let level = query.level || "";
-  let group = query.group || "";
-  let copy = query.copy || "";
-  let sound = query.sound || "";
-  let badge = query.badge || "";
-  
-  // 从路径解析
-  if (parts.length > 0) {
-    deviceKey = parts[0];
-  }
-  
-  if (parts.length > 1) {
-    const content = decodeURIComponent(parts.slice(1).join('/'));
-    if (!title && !body) {
+
+  if (!title && !body && parts.length > 0) {
+    // 如果 deviceKey 还是默认值，从路径第一个部分取
+    if (deviceKey === 'default') {
+      deviceKey = parts[0];
+    }
+    // 剩余部分作为标题和内容
+    if (parts.length > 1) {
+      const content = decodeURIComponent(parts.slice(1).join('/'));
       const idx = content.indexOf('/');
       if (idx > 0) {
         title = content.substring(0, idx);
@@ -111,108 +93,107 @@ function parseBarkRequest(url, method, bodyData = null) {
       }
     }
   }
-  
-  // POST body 覆盖
-  if (bodyData) {
-    if (bodyData.title) title = bodyData.title;
-    if (bodyData.body) body = bodyData.body;
-    if (bodyData.level) level = bodyData.level;
-    if (bodyData.group) group = bodyData.group;
-    if (bodyData.copy) copy = bodyData.copy;
-    if (bodyData.sound) sound = bodyData.sound;
-    if (bodyData.badge) badge = bodyData.badge;
-    if (bodyData.device_key) deviceKey = bodyData.device_key;
+
+  // 兼容 Bark 的 /device_key/title 格式（没有 body）
+  if (title && !body && parts.length === 2) {
+    // title 已经是标题，没有 body
   }
-  
-  return { deviceKey, title, body, level, group, copy, sound, badge };
+
+  return { deviceKey, title, body, level, group, copy };
 }
 
-// ============ 企业微信应用消息 ============
+// ============ 企业微信应用消息（完全对齐 Python WeCom 类） ============
 async function sendWecomAppMessage(title, content, barkData) {
   if (!QYWX_AM) {
-    throw new Error('QYWX_AM 未配置，请在环境变量中设置');
+    throw new Error('QYWX_AM 环境变量未配置');
   }
-  
-  // 解析配置: corpid,corpsecret,agentid,touser,media_id
+
   const parts = QYWX_AM.split(',').map(s => s.trim());
   if (parts.length < 4 || parts.length > 5) {
-    throw new Error('QYWX_AM 格式错误，应为: corpid,corpsecret,agentid,touser,media_id(可选)');
+    throw new Error(`QYWX_AM 格式错误: 需要 4-5 个字段，当前 ${parts.length} 个`);
   }
-  
+
   const [corpid, corpsecret, agentid, touser, media_id] = parts;
-  
-  // 1. 获取 access_token
+  const finalTouser = touser || '@all';
+
+  // ----- 1. 获取 access_token (对应 Python 的 get_access_token) -----
   const tokenUrl = `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${corpid}&corpsecret=${corpsecret}`;
+  console.log(`[WeCom] 正在获取 access_token...`);
+
   const tokenResponse = await fetch(tokenUrl, { method: 'GET' });
-  
   if (!tokenResponse.ok) {
-    throw new Error(`获取 access_token 失败: ${tokenResponse.status}`);
+    throw new Error(`获取 token HTTP 错误: ${tokenResponse.status}`);
   }
-  
   const tokenData = await tokenResponse.json();
+  console.log(`[WeCom] Token 响应: errcode=${tokenData.errcode}, errmsg=${tokenData.errmsg}`);
+
   if (tokenData.errcode !== 0) {
-    throw new Error(`获取 access_token 失败: ${tokenData.errmsg}`);
+    throw new Error(`获取 token 失败: ${tokenData.errmsg} (errcode: ${tokenData.errcode})`);
   }
-  
   const accessToken = tokenData.access_token;
-  
-  // 2. 构建消息内容
-  const message = title + "\n\n" + content;
-  
-  // 3. 发送消息
-  let payload;
+
+  // ----- 2. 构建消息 (对齐 Python send_text 和 send_mpnews) -----
   const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${accessToken}`;
-  
-  // 如果有 media_id，发送图文消息 (mpnews)
-  if (media_id && media_id.length > 0) {
-    // 图文消息
+
+  let payload;
+  const hasMediaId = media_id && media_id.length > 0;
+
+  if (hasMediaId) {
+    // ===== 图文消息 (mpnews) - 对应 send_mpnews =====
+    console.log(`[WeCom] 使用 mpnews 类型，media_id: ${media_id}`);
+    // 重要：将换行符替换为 <br/>，与 Python 版本一致
+    const contentWithBr = content.replace(/\n/g, '<br/>');
     payload = {
-      touser: touser || '@all',
+      touser: finalTouser,
       msgtype: 'mpnews',
       agentid: parseInt(agentid),
       mpnews: {
-        articles: [
-          {
-            title: title || '通知',
-            thumb_media_id: media_id,
-            author: '系统',
-            content_source_url: '',
-            content: content,
-            digest: content.substring(0, 100)
-          }
-        ]
+        articles: [{
+          title: title || '通知',
+          thumb_media_id: media_id,
+          author: 'Author',
+          content_source_url: '',
+          content: contentWithBr,
+          digest: content.substring(0, 100)
+        }]
       },
       safe: 0
     };
   } else {
-    // 文本消息
+    // ===== 文本消息 (text) - 对应 send_text =====
+    console.log(`[WeCom] 使用 text 类型`);
+    const messageText = title + "\n\n" + content;
     payload = {
-      touser: touser || '@all',
+      touser: finalTouser,
       msgtype: 'text',
       agentid: parseInt(agentid),
-      text: {
-        content: message
-      },
+      text: { content: messageText },
       safe: 0
     };
   }
-  
-  const response = await fetch(sendUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+
+  console.log(`[WeCom] 发送消息到: ${finalTouser}, agentid: ${agentid}`);
+
+  // ----- 3. 发送消息 -----
+  const sendResponse = await fetch(sendUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
-  
-  if (!response.ok) {
-    throw new Error(`发送消息失败: ${response.status}`);
+
+  if (!sendResponse.ok) {
+    throw new Error(`发送消息 HTTP 错误: ${sendResponse.status}`);
   }
-  
-  const result = await response.json();
-  if (result.errcode !== 0) {
-    throw new Error(`企业微信 API 错误: ${result.errmsg} (errcode: ${result.errcode})`);
+
+  const sendResult = await sendResponse.json();
+  console.log(`[WeCom] 发送响应: errcode=${sendResult.errcode}, errmsg=${sendResult.errmsg}`);
+
+  // Python 版本返回的是 errmsg，这里也返回 errmsg
+  if (sendResult.errcode !== 0) {
+    throw new Error(`发送失败: ${sendResult.errmsg} (errcode: ${sendResult.errcode})`);
   }
-  
-  return result;
+
+  return sendResult.errmsg; // 对应 Python 的 return respone["errmsg"]
 }
 
 // ============ 发送到 Mattermost ============
@@ -220,21 +201,16 @@ async function sendToMattermost(deviceKey, text) {
   if (!MATTERMOST_WEBHOOK_BASE_URL) {
     throw new Error('MATTERMOST_WEBHOOK_BASE_URL 未配置');
   }
-  
   const webhookUrl = `${MATTERMOST_WEBHOOK_BASE_URL.replace(/\/$/, '')}/hooks/${deviceKey}`;
-  const payload = { text };
-  
   const response = await fetch(webhookUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ text })
   });
-  
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`HTTP ${response.status}: ${errorText}`);
   }
-  
   return response;
 }
 
@@ -245,14 +221,14 @@ export async function onRequest(context) {
   const path = url.pathname;
   const method = request.method;
 
-  // ===== 健康检查 =====
+  // 健康检查
   if (path === "/" || path === "/health") {
     return jsonResponse({
       status: "running",
       service: "bark-to-wecom-mattermost",
       version: "2.0.0",
       endpoints: {
-        wechat: "GET/POST /wx/{device_key}/{title}/{body} (企业微信应用消息)",
+        wechat: "GET/POST /wx/{device_key}/{title}/{body}",
         mattermost: "GET/POST /mattermost/{device_key}/{title}/{body}",
         health: "GET /health"
       },
@@ -264,16 +240,12 @@ export async function onRequest(context) {
     });
   }
 
-  // ===== 路由判断 =====
+  // 路由判断
   const isWechat = path.startsWith('/wx');
   const isMattermost = path.startsWith('/mattermost');
-  
+
   if (!isWechat && !isMattermost) {
-    return jsonResponse({
-      code: 404,
-      message: "Not found. Use /wx (企业微信) or /mattermost",
-      timestamp: Date.now()
-    }, 404);
+    return jsonResponse({ code: 404, message: "Not found. Use /wx or /mattermost" }, 404);
   }
 
   try {
@@ -282,32 +254,21 @@ export async function onRequest(context) {
     if (method === "POST") {
       const ct = request.headers.get("content-type") || "";
       if (ct.includes("application/json")) {
-        try {
-          bodyData = await request.json();
-        } catch (e) {
-          bodyData = {};
-        }
+        try { bodyData = await request.json(); } catch (e) { bodyData = {}; }
       }
     }
 
-    // 解析请求
+    // 记录原始请求（用于调试）
+    console.log(`[请求] method=${method}, path=${path}, query=${url.search}, body=${JSON.stringify(bodyData)}`);
+
+    // 解析 Bark 请求
     const barkData = parseBarkRequest(request.url, method, bodyData);
-    if (!barkData) {
-      return jsonResponse({
-        code: 400,
-        message: "Invalid request format",
-        timestamp: Date.now()
-      }, 400);
-    }
+    console.log(`[解析] deviceKey=${barkData.deviceKey}, title=${barkData.title}, body=${barkData.body.substring(0, 50)}...`);
 
     // 构建消息
     const text = buildMessageContent(barkData);
     if (!text) {
-      return jsonResponse({
-        code: 200,
-        message: "empty notification",
-        timestamp: Date.now()
-      });
+      return jsonResponse({ code: 200, message: "empty notification", timestamp: Date.now() });
     }
 
     // ===== 根据路由发送 =====
@@ -315,34 +276,19 @@ export async function onRequest(context) {
     let target = '';
 
     if (isWechat) {
-      // ===== 发送到企业微信应用消息 =====
       target = 'wecom_app';
-      
       if (!QYWX_AM) {
-        return jsonResponse({
-          code: 500,
-          message: "企业微信未配置: QYWX_AM 未设置",
-          timestamp: Date.now()
-        }, 500);
+        return jsonResponse({ code: 500, message: "企业微信未配置: QYWX_AM 未设置" }, 500);
       }
-      
       const title = barkData.title || '通知';
       result = await sendWecomAppMessage(title, text, barkData);
-      
+
     } else if (isMattermost) {
-      // ===== 发送到 Mattermost =====
       target = 'mattermost';
-      
       if (!MATTERMOST_WEBHOOK_BASE_URL) {
-        return jsonResponse({
-          code: 500,
-          message: "Mattermost 未配置: MATTERMOST_WEBHOOK_BASE_URL 未设置",
-          timestamp: Date.now()
-        }, 500);
+        return jsonResponse({ code: 500, message: "Mattermost 未配置" }, 500);
       }
-      
-      const deviceKey = barkData.deviceKey || "default";
-      result = await sendToMattermost(deviceKey, text);
+      result = await sendToMattermost(barkData.deviceKey || "default", text);
     }
 
     return jsonResponse({
@@ -350,14 +296,16 @@ export async function onRequest(context) {
       message: "success",
       target: target,
       device_key: barkData.deviceKey || "default",
+      wecom_response: result,  // 返回企业微信的 errmsg
       timestamp: Date.now()
     });
 
   } catch (error) {
-    console.error('Error:', error);
+    console.error('[错误]', error);
     return jsonResponse({
       code: 500,
       message: `Error: ${error.message}`,
+      stack: error.stack,
       timestamp: Date.now()
     }, 500);
   }
