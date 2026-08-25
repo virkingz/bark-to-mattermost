@@ -1,9 +1,7 @@
-// functions/index.js - EdgeOne Pages 专用
+// functions/index.js - EdgeOne Pages 正确格式
 
-// 从环境变量获取配置（在 Pages 控制台设置）
 const MATTERMOST_WEBHOOK_BASE_URL = process.env.MATTERMOST_WEBHOOK_BASE_URL || '';
 
-// 优先级映射
 const LEVEL_MAP = {
   "active": "🔴 高优先级",
   "timeSensitive": "🟡 中优先级",
@@ -95,88 +93,94 @@ function jsonResponse(data, status = 200) {
   });
 }
 
-// ============ EdgeOne Pages 入口 ============
-export async function onRequest(context) {
-  const { request } = context;
-  const url = new URL(request.url);
-  const path = url.pathname;
-  const method = request.method;
+// ============ EdgeOne Pages 正确入口 ============
+// EdgeOne Pages 需要导出 default 对象，包含 fetch 方法
 
-  // 健康检查
-  if (path === "/" || path === "/health") {
-    return jsonResponse({
-      status: "running",
-      service: "bark-to-mattermost",
-      timestamp: Date.now()
-    });
-  }
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
 
-  // 检查环境变量
-  const baseUrl = process.env.MATTERMOST_WEBHOOK_BASE_URL || 
-                  context.env?.MATTERMOST_WEBHOOK_BASE_URL || '';
-  
-  if (!baseUrl) {
-    console.error("MATTERMOST_WEBHOOK_BASE_URL not set");
-    return jsonResponse({
-      code: 500,
-      message: "Configuration error: MATTERMOST_WEBHOOK_BASE_URL not set"
-    }, 500);
-  }
+    // 获取环境变量 - 从 env 参数或 process.env
+    const baseUrl = env?.MATTERMOST_WEBHOOK_BASE_URL || process.env.MATTERMOST_WEBHOOK_BASE_URL || '';
 
-  try {
-    // 获取 body
-    let bodyData = null;
-    if (method === "POST") {
-      const ct = request.headers.get("content-type") || "";
-      if (ct.includes("application/json")) {
-        try { bodyData = await request.json(); } catch (e) { bodyData = {}; }
-      }
+    // 健康检查
+    if (path === "/" || path === "/health") {
+      return jsonResponse({
+        status: "running",
+        service: "bark-to-mattermost",
+        timestamp: Date.now()
+      });
     }
 
-    // 解析请求
-    const barkData = parseBarkRequest(request.url, method, bodyData);
-    if (!barkData) {
-      return jsonResponse({ code: 400, message: "Invalid request" }, 400);
-    }
-
-    const deviceKey = barkData.device_key;
-    console.log(`device_key: ${deviceKey}`);
-
-    // 构建 payload
-    const payload = buildMattermostPayload(barkData);
-    if (!payload) {
-      return jsonResponse({ code: 200, message: "empty", timestamp: Date.now() });
-    }
-
-    // 发送到 Mattermost
-    const webhookUrl = `${baseUrl.replace(/\/$/, '')}/hooks/${deviceKey}`;
-    const resp = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-
-    if (!resp.ok) {
-      console.error(`HTTP ${resp.status}`);
+    // 检查环境变量
+    if (!baseUrl) {
+      console.error("MATTERMOST_WEBHOOK_BASE_URL not set");
       return jsonResponse({
         code: 500,
-        message: `Forward failed: HTTP ${resp.status}`,
-        timestamp: Date.now()
+        message: "Configuration error: MATTERMOST_WEBHOOK_BASE_URL not set"
       }, 500);
     }
 
-    return jsonResponse({
-      code: 200,
-      message: "success",
-      timestamp: Date.now()
-    });
+    try {
+      // 获取 body
+      let bodyData = null;
+      if (method === "POST") {
+        const ct = request.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+          try { bodyData = await request.json(); } catch (e) { bodyData = {}; }
+        }
+      }
 
-  } catch (error) {
-    console.error(error.message);
-    return jsonResponse({
-      code: 500,
-      message: `Error: ${error.message}`,
-      timestamp: Date.now()
-    }, 500);
+      // 解析请求
+      const barkData = parseBarkRequest(request.url, method, bodyData);
+      if (!barkData) {
+        return jsonResponse({ code: 400, message: "Invalid request" }, 400);
+      }
+
+      const deviceKey = barkData.device_key;
+      console.log(`device_key: ${deviceKey}`);
+
+      // 构建 payload
+      const payload = buildMattermostPayload(barkData);
+      if (!payload) {
+        return jsonResponse({ code: 200, message: "empty", timestamp: Date.now() });
+      }
+
+      // 发送到 Mattermost
+      const webhookUrl = `${baseUrl.replace(/\/$/, '')}/hooks/${deviceKey}`;
+      console.log(`Sending to: ${webhookUrl}`);
+
+      const resp = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!resp.ok) {
+        const errorText = await resp.text();
+        console.error(`HTTP ${resp.status}: ${errorText}`);
+        return jsonResponse({
+          code: 500,
+          message: `Forward failed: HTTP ${resp.status}`,
+          timestamp: Date.now()
+        }, 500);
+      }
+
+      return jsonResponse({
+        code: 200,
+        message: "success",
+        timestamp: Date.now()
+      });
+
+    } catch (error) {
+      console.error(error.message);
+      return jsonResponse({
+        code: 500,
+        message: `Error: ${error.message}`,
+        timestamp: Date.now()
+      }, 500);
+    }
   }
-}
+};
