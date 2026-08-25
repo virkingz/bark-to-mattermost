@@ -1,9 +1,7 @@
-// edge-functions/index.js// EdgeOne Functions - Bark to Mattermost
+// index.js - EdgeOne Pages Functions 兼容格式
 
-// 从环境变量获取配置（在EdgeOne控制台设置）
-const MATTERMOST_WEBHOOK_BASE_URL = typeof process !== 'undefined' 
-  ? process.env.MATTERMOST_WEBHOOK_BASE_URL 
-  : '';
+// 从环境变量获取配置
+const MATTERMOST_WEBHOOK_BASE_URL = process.env.MATTERMOST_WEBHOOK_BASE_URL || '';
 
 // 优先级映射
 const LEVEL_MAP = {
@@ -15,49 +13,39 @@ const LEVEL_MAP = {
 // 排除的路径
 const EXCLUDED_PATHS = ["/", "/push", "/webhook", "/favicon.ico"];
 
-/**
- * 构建Mattermost消息payload
- */
 function buildMattermostPayload(barkData) {
   const title = barkData.title || "";
   const body = barkData.body || "";
   const lines = [];
 
-  // 1. 优先级标识
   const level = barkData.level || "";
   if (level && LEVEL_MAP[level]) {
     lines.push(LEVEL_MAP[level]);
   }
 
-  // 2. 标题
   if (title) {
     lines.push(`**${title}**`);
   }
 
-  // 3. 正文
   if (body) {
     lines.push(body);
   }
 
-  // 4. 徽章
   const badge = barkData.badge || "";
   if (badge) {
     lines.push(`徽章: ${badge}`);
   }
 
-  // 5. 自动复制
   const copyText = barkData.copy || "";
   if (copyText) {
     lines.push(`📋 复制内容: \`${copyText}\``);
   }
 
-  // 6. 声音
   const sound = barkData.sound || "";
   if (sound) {
     lines.push(`🔊 音效: ${sound}`);
   }
 
-  // 7. 分组
   const group = barkData.group || "";
   if (group) {
     lines.push(`🏷️ 分组: ${group}`);
@@ -68,12 +56,9 @@ function buildMattermostPayload(barkData) {
   }
 
   let textContent = lines.join("\n");
-  // 移除所有URL链接
   textContent = textContent.replace(/https?:\/\/\S+/g, '');
-  // 清理多余的空行
   textContent = textContent.replace(/\n\s*\n+/g, '\n').trim();
 
-  // 如果指定了markdown，使用markdown内容
   if (barkData.markdown) {
     textContent = barkData.markdown;
   }
@@ -81,15 +66,11 @@ function buildMattermostPayload(barkData) {
   return { text: textContent };
 }
 
-/**
- * 解析Bark请求
- */
 function parseBarkRequest(url, method, bodyData = null) {
   const urlObj = new URL(url);
   const path = urlObj.pathname;
   const queryParams = Object.fromEntries(urlObj.searchParams);
 
-  // 解析路径
   const parts = path.replace(/^\//, '').split('/').filter(p => p.length > 0);
   
   if (parts.length === 0) {
@@ -98,14 +79,12 @@ function parseBarkRequest(url, method, bodyData = null) {
 
   const deviceKey = parts[0];
 
-  // 初始化bark数据
   const barkData = {
     title: "",
     body: "",
     device_key: deviceKey
   };
 
-  // 处理查询参数
   if (queryParams.title) {
     barkData.title = decodeURIComponent(queryParams.title);
   }
@@ -113,7 +92,6 @@ function parseBarkRequest(url, method, bodyData = null) {
     barkData.body = decodeURIComponent(queryParams.body);
   }
 
-  // 其他参数
   const stringParams = ['url', 'group', 'icon', 'copy'];
   for (const param of stringParams) {
     if (queryParams[param]) {
@@ -135,12 +113,10 @@ function parseBarkRequest(url, method, bodyData = null) {
     barkData.isArchive = queryParams.isArchive;
   }
 
-  // 处理路径参数
   if (parts.length > 1) {
     const pathContent = parts.slice(1).join('/');
     const decodedPath = decodeURIComponent(pathContent);
 
-    // 如果查询参数中没有标题，尝试从路径中解析
     if (!barkData.title && !barkData.body) {
       if (decodedPath.includes('/')) {
         const idx = decodedPath.indexOf('/');
@@ -152,7 +128,6 @@ function parseBarkRequest(url, method, bodyData = null) {
     }
   }
 
-  // 合并POST body数据
   if (bodyData) {
     for (const [key, value] of Object.entries(bodyData)) {
       const lowerKey = key.toLowerCase();
@@ -169,30 +144,25 @@ function parseBarkRequest(url, method, bodyData = null) {
   return barkData;
 }
 
-/**
- * 创建JSON响应
- */
 function createResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status: status,
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*"
     }
   });
 }
 
-/**
- * 主请求处理函数
- */
-async function handleRequest(request) {
+// EdgeOne Pages Functions 入口 - 使用 export 方式
+export async function onRequest(context) {
+  const { request } = context;
   const url = new URL(request.url);
   const path = url.pathname;
   const method = request.method;
 
-  // 获取环境变量 - EdgeOne使用process.env
-  const baseUrl = typeof process !== 'undefined' 
-    ? process.env.MATTERMOST_WEBHOOK_BASE_URL 
-    : '';
+  // 获取环境变量 - EdgeOne Pages 使用 context.env
+  const baseUrl = context.env?.MATTERMOST_WEBHOOK_BASE_URL || process.env?.MATTERMOST_WEBHOOK_BASE_URL || '';
 
   // 健康检查
   if (path === "/" || path === "/health") {
@@ -211,7 +181,6 @@ async function handleRequest(request) {
     }, 404);
   }
 
-  // 检查环境变量
   if (!baseUrl) {
     console.error("MATTERMOST_WEBHOOK_BASE_URL environment variable not set");
     return createResponse({
@@ -221,7 +190,6 @@ async function handleRequest(request) {
   }
 
   try {
-    // 获取body数据
     let bodyData = null;
     if (method === "POST") {
       const contentType = request.headers.get("content-type") || "";
@@ -234,7 +202,6 @@ async function handleRequest(request) {
       }
     }
 
-    // 解析Bark请求
     const barkData = parseBarkRequest(request.url, method, bodyData);
 
     if (!barkData) {
@@ -245,14 +212,12 @@ async function handleRequest(request) {
     }
 
     const deviceKey = barkData.device_key;
-    console.log(`解析Bark数据: device_key=${deviceKey}, title=${(barkData.title || '').substring(0, 50)}...`);
+    console.log(`解析Bark数据: device_key=${deviceKey}`);
 
-    // 构建Mattermost payload
     const payload = buildMattermostPayload(barkData);
 
-    // 空通知不发送
     if (!payload) {
-      console.log(`空通知，不发送到Mattermost (device_key: ${deviceKey})`);
+      console.log(`空通知，不发送 (device_key: ${deviceKey})`);
       return createResponse({
         code: 200,
         message: "success",
@@ -260,13 +225,9 @@ async function handleRequest(request) {
       });
     }
 
-    // 构建完整的webhook URL
     const baseUrlClean = baseUrl.replace(/\/$/, '');
     const mattermostUrl = `${baseUrlClean}/hooks/${deviceKey}`;
 
-    console.log(`目标Mattermost URL: ${mattermostUrl}`);
-
-    // 发送到Mattermost
     const response = await fetch(mattermostUrl, {
       method: "POST",
       headers: {
@@ -302,8 +263,3 @@ async function handleRequest(request) {
     }, 500);
   }
 }
-
-// EdgeOne Functions 入口
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
-});
