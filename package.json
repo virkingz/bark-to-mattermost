@@ -2,7 +2,7 @@
   "name": "bark-to-mattermost",
   "version": "1.0.0",
   "description": "Bark to Mattermost webhook bridge for EdgeOne",
-  "main": "edge-functions/index.js",
+  "main": "functions/index.js",
   "scripts": {
     "dev": "edgeone dev",
     "deploy": "edgeone deploy"
