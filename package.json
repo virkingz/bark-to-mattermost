@@ -1,7 +1,7 @@
 {
-  "name": "bark-to-mattermost",
+  "name": "bark-to-wechat",
   "version": "1.0.0",
-  "description": "Bark to Mattermost webhook",
+  "description": "Bark to weChat webhook",
   "type": "module",
   "main": "cloud-functions/[[path]].js"
 }
